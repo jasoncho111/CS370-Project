@@ -8,18 +8,8 @@
 
 Click the star button if you like the content !
 
-## Getting Started
-
-```bash
-git clone --recurse-submodules https://github.com/pantelis/artificial-intelligence.git
-```
-
-Launch VSCode and after installing 
-
-1. Docker in your machine
-2. [The Docker extensions](https://code.visualstudio.com/docs/devcontainers/containers) 
-  
-launch VSCode in the container as shown [here](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers). 
+## Group Members
+Jason Cho, Namitha Yalla 
 
 ## Credits
 
