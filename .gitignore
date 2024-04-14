@@ -304,3 +304,5 @@ s2s
 # IPython
 profile_default/
 ipython_config.py
+
+sidewalks/
