@@ -306,3 +306,6 @@ profile_default/
 ipython_config.py
 
 sidewalks/
+Segment\ Anything/Training-Sidewalks/TestMasks
+Segment\ Anything/Training-Sidewalks/.tmp.driveupload
+Segment\ Anything/Training-Sidewalks/Checkpoints
