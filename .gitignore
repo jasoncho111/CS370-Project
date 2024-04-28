@@ -309,3 +309,5 @@ sidewalks/
 Segment\ Anything/Training-Sidewalks/TestMasks
 Segment\ Anything/Training-Sidewalks/.tmp.driveupload
 Segment\ Anything/Training-Sidewalks/Checkpoints
+
+Segment\ Anything/App/SAM_model_cp

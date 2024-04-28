@@ -1,202 +1,193 @@
 import ipyleaflet as L
 from faicons import icon_svg
 from geopy.distance import geodesic, great_circle
+from ipywidgets import FileUpload
+from pytest import Session  # Import FileUpload widget for image upload
 from shared import BASEMAPS, CITIES
-from shiny import reactive
+from shiny import Inputs, Outputs, reactive
 from shiny.express import input, render, ui
 from shinywidgets import render_widget
+from shiny.types import ImgData, FileInfo
+from PIL import Image 
+import io
+from transformers import SamModel, SamConfig, SamProcessor
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
 
-city_names = sorted(list(CITIES.keys()))
 
-ui.page_opts(title="Location Distance Calculator", fillable=True)
+# city_names = sorted(list(CITIES.keys()))
+# Load the model configuration
+
+ui.page_opts(title="Sidewalk Detector", fillable=True)
 {"class": "bslib-page-dashboard"}
+ui.input_dark_mode(mode="dark")
 
-with ui.sidebar():
-    ui.input_selectize("loc1", "Location 1", choices=city_names, selected="New York")
-    ui.input_selectize("loc2", "Location 2", choices=city_names, selected="London")
-    ui.input_selectize(
-        "basemap",
-        "Choose a basemap",
-        choices=list(BASEMAPS.keys()),
-        selected="WorldImagery",
-    )
-    ui.input_dark_mode(mode="dark")
 
 with ui.layout_column_wrap(fill=False):
-    with ui.value_box(showcase=icon_svg("globe"), theme="gradient-blue-indigo"):
-        "Great Circle Distance"
+    ui.input_file("input_image", "Choose TIFF File", accept=[".tif", ".tiff"], multiple=False)
 
-        @render.text
-        def great_circle_dist():
-            circle = great_circle(loc1xy(), loc2xy())
-            return f"{circle.kilometers.__round__(1)} km"
-
-    with ui.value_box(showcase=icon_svg("ruler"), theme="gradient-blue-indigo"):
-        "Geodisic Distance"
-
-        @render.text
-        def geo_dist():
-            dist = geodesic(loc1xy(), loc2xy())
-            return f"{dist.kilometers.__round__(1)} km"
-
-    with ui.value_box(showcase=icon_svg("mountain"), theme="gradient-blue-indigo"):
-        "Altitude Difference"
-
-        @render.text
-        def altitude():
-            try:
-                return f'{loc1()["altitude"] - loc2()["altitude"]} m'
-            except TypeError:
-                return "N/A (altitude lookup failed)"
-
-
+#render input image
 with ui.card():
-    ui.card_header("Map (drag the markers to change locations)")
+    ui.card_header("Image Uploaded")
 
-    @render_widget
-    def map():
-        return L.Map(zoom=4, center=(0, 0))
+    @render.image
+    def image():
+        file: list[FileInfo] | None = input.input_image()
+        
+        # Perform TIFF to PNG conversion
+        
+        if file:
+            tmp_save_file = get_temp_save_file(file[0]["datapath"], "png")
+            success = convert_tiff_to_png_in_memory(file[0]["datapath"], tmp_save_file)
+            if success:
+                img: ImgData = {"src": tmp_save_file, "style": {"max-width": "100%"}}
+                return img
+            else:
+                return None
+        else:
+            return None
+
+#render mask
+with ui.layout_columns():
+    with ui.card():
+        ui.card_header("Generated Prediction Mask")
+
+        @render.image
+        def mask_pred():
+            file: list[FileInfo] | None = input.input_image()
+            if file:
+                tmp_prob_file = get_temp_save_file(file[0]["datapath"], "prob")
+                tmp_pred_file = get_temp_save_file(file[0]["datapath"], "pred")
+                success = get_mask(file[0]["datapath"], tmp_prob_file, tmp_pred_file)
+                if success:
+                    img: ImgData = {"src": tmp_prob_file, "style": {"max-width": "100%"}}
+                    return img
+                else:
+                    return None
+            else:
+                return None
+    
+    with ui.card():
+        ui.card_header("Generated Probability Map")
+
+        @render.image
+        def mask_prob():
+            file: list[FileInfo] | None = input.input_image()
+            if file:
+                tmp_pred_file = get_temp_save_file(file[0]["datapath"], "pred")
+                img: ImgData = {"src": tmp_pred_file, "style": {"max-width": "100%"}}
+                return img
+            else:
+                return None
 
 
-# Reactive values to store location information
-loc1 = reactive.value()
-loc2 = reactive.value()
+def get_temp_save_file(tiff_file, usage: str):
+    from pathlib import Path
+    upload_loc = Path(tiff_file)
+    tmp_folder = str(upload_loc.parent)
+    tif_name = str(upload_loc.name)
+    no_ext_name = tif_name.strip(".tiff") if tif_name.endswith(".tiff") else tif_name.strip(".tif")
+    if usage == "png":
+        png_name = no_ext_name + ".png"
+        tmp_save_file = tmp_folder + f"\\{png_name}"
+        return tmp_save_file
+    elif usage == "prob":
+        mask_name = no_ext_name + "prob.png"
+        tmp_save_file = tmp_folder + f"\\{mask_name}"
+        return tmp_save_file
+    elif usage == "pred":
+        mask_name = no_ext_name + "pred.png"
+        tmp_save_file = tmp_folder + f"\\{mask_name}"
+        return tmp_save_file
+    else:
+        return None
 
-
-# Update the reactive values when the selectize inputs change
-@reactive.effect
-def _():
-    loc1.set(CITIES.get(input.loc1(), loc_str_to_coords(input.loc1())))
-    loc2.set(CITIES.get(input.loc2(), loc_str_to_coords(input.loc2())))
-
-
-# When a marker is moved, the input value gets updated to "lat, lon",
-# so we decode that into a dict (and also look up the altitude)
-def loc_str_to_coords(x: str) -> dict:
-    latlon = x.split(", ")
-    if len(latlon) != 2:
-        return {}
-
-    lat = float(latlon[0])
-    lon = float(latlon[1])
-
+def convert_tiff_to_png_in_memory(tiff_file, tmp_save_file):
     try:
-        import requests
+        # Open the TIFF image from bytes data
+        with Image.open(tiff_file) as img:
+            # Create an in-memory PNG image
+            png_data = io.BytesIO()
+            
+            img.save(png_data, format="PNG")
+            png_data.seek(0)  # Reset the stream position
+        
+            with open(tmp_save_file, "wb") as png_file:
+                png_file.write(png_data.getvalue())
+        
+        return True
+    except Exception as e:
+        print(f"Error converting TIFF to PNG in memory: {e}")
+        return False
 
-        query = f"https://api.open-elevation.com/api/v1/lookup?locations={lat},{lon}"
-        r = requests.get(query).json()
-        altitude = r["results"][0]["elevation"]
-    except Exception:
-        altitude = None
+def get_mask(tiff_file, tmp_prob_file, tmp_pred_file):
+    try:
+        init_sam_model()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        global sam_model, processor
+        input_image = Image.open(tiff_file)
+        inputs = processor(input_image, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        sam_model.eval()
 
-    return {"latitude": lat, "longitude": lon, "altitude": altitude}
+        with torch.no_grad():
+            outputs = sam_model(**inputs, multimask_output=False)
 
+        # apply sigmoid
+        image_prob = torch.sigmoid(outputs.pred_masks.squeeze(1))
+        
+        # convert soft mask to hard mask
+        image_prob = image_prob.cpu().numpy().squeeze()
+        image_prediction = (image_prob > 0.5).astype(np.uint8)
 
-# Convenient way to get the lat/lons as a tuple
-@reactive.calc
-def loc1xy():
-    return loc1()["latitude"], loc1()["longitude"]
-
-
-@reactive.calc
-def loc2xy():
-    return loc2()["latitude"], loc2()["longitude"]
-
-
-# Add marker for first location
-@reactive.effect
-def _():
-    update_marker(map.widget, loc1xy(), on_move1, "loc1")
-
-
-# Add marker for second location
-@reactive.effect
-def _():
-    update_marker(map.widget, loc2xy(), on_move2, "loc2")
-
-
-# Add line and fit bounds when either marker is moved
-@reactive.effect
-def _():
-    update_line(map.widget, loc1xy(), loc2xy())
-
-
-# If new bounds fall outside of the current view, fit the bounds
-@reactive.effect
-def _():
-    l1 = loc1xy()
-    l2 = loc2xy()
-
-    lat_rng = [min(l1[0], l2[0]), max(l1[0], l2[0])]
-    lon_rng = [min(l1[1], l2[1]), max(l1[1], l2[1])]
-    new_bounds = [
-        [lat_rng[0], lon_rng[0]],
-        [lat_rng[1], lon_rng[1]],
-    ]
-
-    b = map.widget.bounds
-    if len(b) == 0:
-        map.widget.fit_bounds(new_bounds)
-    elif (
-        lat_rng[0] < b[0][0]
-        or lat_rng[1] > b[1][0]
-        or lon_rng[0] < b[0][1]
-        or lon_rng[1] > b[1][1]
-    ):
-        map.widget.fit_bounds(new_bounds)
+        write_img_to_file(tmp_prob_file, image_prob)
+        write_img_to_file(tmp_pred_file, image_prediction, 'PRGn')
+        return True
+    except Exception as e:
+        print(f"Error in generating masks: {str(e)}")
+        return False
 
 
-# Update the basemap
-@reactive.effect
-def _():
-    update_basemap(map.widget, input.basemap())
 
+processor = None
+sam_model = None
 
-# ---------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------
+def init_sam_model():
+    global sam_model, processor
+    
+    # Create an instance of the model architecture with the loaded configuration
+    if not sam_model:
+        model_config = SamConfig.from_pretrained("facebook/sam-vit-base")
+        processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
 
+        sam_model = SamModel(config=model_config)
+        #Update the model by loading the weights from saved file.
+        sam_model.load_state_dict(torch.load("SAM_model_cp/sidewalks_model_checkpoint_full_train.pth"))
+        # set the device to cuda if available, otherwise use cpu
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        sam_model.to(device)
 
-def update_marker(map: L.Map, loc: tuple, on_move: object, name: str):
-    remove_layer(map, name)
-    m = L.Marker(location=loc, draggable=True, name=name)
-    m.on_move(on_move)
-    map.add_layer(m)
+def write_img_to_file(filepath, image_array, color = None):
+    if color:
+        # Create a color map (e.g., using 'viridis' colormap for segmentation)
+        cmap = plt.get_cmap(color)
 
+        # Normalize the image_array values to be between 0 and 1
+        normalized_image = image_array.astype(np.float32) / np.max(image_array)
 
-def update_line(map: L.Map, loc1: tuple, loc2: tuple):
-    remove_layer(map, "line")
-    map.add_layer(
-        L.Polyline(locations=[loc1, loc2], color="blue", weight=2, name="line")
-    )
+        # Apply the colormap to the normalized image to get RGBA values
+        rgba_image = cmap(normalized_image)[:, :, :3]  # Ignore alpha channel (4th channel)
 
+        # Convert to uint8 (0-255 range) for PIL image
+        rgba_image_uint8 = (rgba_image * 255).astype(np.uint8)
 
-def update_basemap(map: L.Map, basemap: str):
-    for layer in map.layers:
-        if isinstance(layer, L.TileLayer):
-            map.remove_layer(layer)
-    map.add_layer(L.basemap_to_tiles(BASEMAPS[input.basemap()]))
+        # Create PIL Image object from the RGBA NumPy array
+        image = Image.fromarray(rgba_image_uint8)
+    else:
+        image_array = (image_array * 255).astype(np.uint8) 
 
-
-def remove_layer(map: L.Map, name: str):
-    for layer in map.layers:
-        if layer.name == name:
-            map.remove_layer(layer)
-
-
-def on_move1(**kwargs):
-    return on_move("loc1", **kwargs)
-
-
-def on_move2(**kwargs):
-    return on_move("loc2", **kwargs)
-
-
-# When the markers are moved, update the selectize inputs to include the new
-# location (which results in the locations() reactive value getting updated,
-# which invalidates any downstream reactivity that depends on it)
-def on_move(id, **kwargs):
-    loc = kwargs["location"]
-    loc_str = f"{loc[0]}, {loc[1]}"
-    choices = city_names + [loc_str]
-    ui.update_selectize(id, selected=loc_str, choices=choices)
+        image = Image.fromarray(image_array)
+    # Save the image to a PNG file
+    image.save(filepath)
