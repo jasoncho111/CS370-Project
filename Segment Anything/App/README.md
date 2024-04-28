@@ -8,6 +8,6 @@
     <br>
 </div>
 <div>
-    Demo: <a>https://youtu.be/N88U1pJP7LU</a><br>
+    Demo: <a href=https://youtu.be/N88U1pJP7LU>Link to demo</a><br>
     Code is located in app.py.
 </div>
